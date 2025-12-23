@@ -1,8 +1,4 @@
 spring:
-  config:
-    activate:
-      on-profile: docker
-
   data:
     mongodb:
       uri: ${MONGODB_URI}
