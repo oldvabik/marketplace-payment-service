@@ -1,0 +1,29 @@
+databaseChangeLog:
+  - changeSet:
+      id: 1-create-payments-collection
+      author: oldvabik
+      changes:
+        - mongoCreateCollection:
+            collectionName: payments
+        - mongoCreateIndex:
+            collectionName: payments
+            indexName: orderId_idx
+            keys:
+              orderId: 1
+        - mongoCreateIndex:
+            collectionName: payments
+            indexName: userId_idx
+            keys:
+              userId: 1
+        - mongoCreateIndex:
+            collectionName: payments
+            indexName: status_idx
+            keys:
+              status: 1
+        - mongoCreateIndex:
+            collectionName: payments
+            indexName: status_timestamp_idx
+            keys:
+              status: 1
+              timestamp: -1
+

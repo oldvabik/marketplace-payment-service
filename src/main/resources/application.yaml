@@ -1,0 +1,40 @@
+spring:
+  application:
+    name: PaymentService
+
+  profiles:
+    active: local
+
+  kafka:
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: payment-service-group
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    enabled: true
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.springframework.kafka: WARN
+
+app:
+  kafka:
+    create-order-topic: order-created-topic
+    create-payment-topic: payment-created-topic
+    payment-group-id: payment-service-group
+
+random:
+  api:
+    url: ${RANDOM_API_URL}
+
+jwt:
+  secret: ${JWT_SECRET}
+
+server:
+  port: 8083
