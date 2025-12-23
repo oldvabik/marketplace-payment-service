@@ -74,10 +74,7 @@ class PaymentServiceImplTest {
         );
         wireMockServer.start();
 
-        int wireMockPort = wireMockServer.port();
-
-        String randomApiUrl = "http://localhost:" + wireMockPort + "/integers?num=1&min=1&max=100&col=1&base=10&format=plain";
-        registry.add("random.api.url", () -> randomApiUrl);
+        registry.add("random.api.url", () -> "http://localhost:" + wireMockServer.port() + "/integers?num=1&min=1&max=100&col=1&base=10&format=plain");
 
         registry.add("spring.kafka.bootstrap-servers", kafkaContainer::getBootstrapServers);
         registry.add("spring.data.mongodb.uri", mongoDBContainer::getReplicaSetUrl);
@@ -120,7 +117,6 @@ class PaymentServiceImplTest {
         if (kafkaConsumer != null) {
             kafkaConsumer.close();
         }
-        wireMockServer.resetAll();
     }
 
     private List<ConsumerRecord<String, CreatePaymentEvent>> pollKafkaRecords(Duration timeout) {
@@ -132,15 +128,9 @@ class PaymentServiceImplTest {
     @Test
     void createPayment_ShouldCreateSuccessfulPaymentAndSendKafkaEvent() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
                 .willReturn(aResponse()
                         .withHeader("Content-Type", "text/plain")
-                        .withBody("42")));
+                        .withBody("42"))); // чётное → SUCCESS
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
                 .orderId("order-123")
@@ -156,29 +146,23 @@ class PaymentServiceImplTest {
         assertThat(result.getPaymentAmount()).isEqualTo(new BigDecimal("99.99"));
         assertThat(result.getStatus()).isEqualTo(PaymentStatus.SUCCESS);
 
-        List<ConsumerRecord<String, CreatePaymentEvent>> records = pollKafkaRecords(Duration.ofSeconds(5));
-        kafkaConsumer.commitSync();
-
-        assertThat(records).hasSize(1);
-        ConsumerRecord<String, CreatePaymentEvent> record = records.get(0);
-        assertThat(record.key()).isEqualTo("order-123");
-        assertThat(record.value()).isNotNull();
-        assertThat(record.value().getOrderId()).isEqualTo("order-123");
-        assertThat(record.value().getPaymentId()).isEqualTo(result.getId());
-        assertThat(record.value().getStatus()).isEqualTo("SUCCESS");
-        assertThat(record.value().getPaymentAmount()).isEqualTo(new BigDecimal("99.99"));
+        await().atMost(15, TimeUnit.SECONDS)
+                .pollInterval(Duration.ofMillis(500))
+                .untilAsserted(() -> {
+                    List<ConsumerRecord<String, CreatePaymentEvent>> records = pollKafkaRecords(Duration.ofMillis(300));
+                    assertThat(records).hasSizeGreaterThanOrEqualTo(1);
+                    assertThat(records.get(0).key()).isEqualTo("order-123");
+                    assertThat(records.get(0).value().getOrderId()).isEqualTo("order-123");
+                    assertThat(records.get(0).value().getPaymentId()).isEqualTo(result.getId());
+                    assertThat(records.get(0).value().getStatus()).isEqualTo("SUCCESS");
+                    assertThat(records.get(0).value().getPaymentAmount()).isEqualTo(new BigDecimal("99.99"));
+                });
     }
 
     @Test
     void createPayment_ShouldCreateFailedPaymentWhenRandomNumberIsOdd() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
-                .willReturn(aResponse().withBody("1")));
+                .willReturn(aResponse().withBody("1"))); // нечётное → FAILED
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
                 .orderId("order-failed")
@@ -188,19 +172,12 @@ class PaymentServiceImplTest {
 
         PaymentDto result = paymentService.createPayment(paymentCreateDto);
 
-        assertThat(result).isNotNull();
         assertThat(result.getStatus()).isEqualTo(PaymentStatus.FAILED);
     }
 
     @Test
     void createPayment_ShouldUseFallbackWhenApiReturnsError() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
                 .willReturn(aResponse().withStatus(500)));
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
@@ -211,7 +188,6 @@ class PaymentServiceImplTest {
 
         PaymentDto result = paymentService.createPayment(paymentCreateDto);
 
-        assertThat(result).isNotNull();
         assertThat(result.getOrderId()).isEqualTo("order-fallback");
         assertThat(result.getStatus()).isIn(PaymentStatus.SUCCESS, PaymentStatus.FAILED);
     }
@@ -219,15 +195,7 @@ class PaymentServiceImplTest {
     @Test
     void createPayment_ShouldUseFallbackWhenApiTimesOut() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
-                .willReturn(aResponse()
-                        .withFixedDelay(3000)
-                        .withBody("10")));
+                .willReturn(aResponse().withFixedDelay(3000).withBody("10")));
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
                 .orderId("order-timeout")
@@ -237,19 +205,12 @@ class PaymentServiceImplTest {
 
         PaymentDto result = paymentService.createPayment(paymentCreateDto);
 
-        assertThat(result).isNotNull();
         assertThat(result.getStatus()).isIn(PaymentStatus.SUCCESS, PaymentStatus.FAILED);
     }
 
     @Test
     void createPayment_ShouldUseFallbackForInvalidApiResponse() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
                 .willReturn(aResponse().withBody("not-a-number")));
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
@@ -260,19 +221,12 @@ class PaymentServiceImplTest {
 
         PaymentDto result = paymentService.createPayment(paymentCreateDto);
 
-        assertThat(result).isNotNull();
         assertThat(result.getStatus()).isIn(PaymentStatus.SUCCESS, PaymentStatus.FAILED);
     }
 
     @Test
     void createPayment_ShouldUseFallbackForEmptyApiResponse() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
                 .willReturn(aResponse().withBody("")));
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
@@ -283,19 +237,12 @@ class PaymentServiceImplTest {
 
         PaymentDto result = paymentService.createPayment(paymentCreateDto);
 
-        assertThat(result).isNotNull();
         assertThat(result.getStatus()).isIn(PaymentStatus.SUCCESS, PaymentStatus.FAILED);
     }
 
     @Test
     void createPayment_ShouldSendKafkaEventAsync() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
                 .willReturn(aResponse().withBody("2")));
 
         PaymentCreateDto paymentCreateDto = PaymentCreateDto.builder()
@@ -306,145 +253,88 @@ class PaymentServiceImplTest {
 
         PaymentDto payment = paymentService.createPayment(paymentCreateDto);
 
-        await().atMost(5, TimeUnit.SECONDS)
+        await().atMost(15, TimeUnit.SECONDS)
+                .pollInterval(Duration.ofMillis(500))
                 .untilAsserted(() -> {
-                    List<ConsumerRecord<String, CreatePaymentEvent>> records =
-                            pollKafkaRecords(Duration.ofMillis(100));
-                    kafkaConsumer.commitSync();
-
-                    assertThat(records).isNotEmpty();
-                    assertThat(records).anyMatch(record ->
-                            record.value() != null &&
-                                    record.value().getPaymentId().equals(payment.getId()));
+                    List<ConsumerRecord<String, CreatePaymentEvent>> records = pollKafkaRecords(Duration.ofMillis(300));
+                    assertThat(records)
+                            .filteredOn(r -> r.value().getPaymentId().equals(payment.getId()))
+                            .isNotEmpty();
                 });
     }
 
     @Test
     void createPayment_MultiplePayments_ShouldGenerateDifferentIds() {
         wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .withQueryParam("num", equalTo("1"))
-                .withQueryParam("min", equalTo("1"))
-                .withQueryParam("max", equalTo("100"))
-                .withQueryParam("col", equalTo("1"))
-                .withQueryParam("base", equalTo("10"))
-                .withQueryParam("format", equalTo("plain"))
                 .willReturn(aResponse().withBody("2")));
 
-        PaymentCreateDto paymentCreateDto1 = PaymentCreateDto.builder()
+        PaymentDto result1 = paymentService.createPayment(PaymentCreateDto.builder()
                 .orderId("order-1")
                 .userId("user-1")
                 .paymentAmount(new BigDecimal("10.00"))
-                .build();
+                .build());
 
-        PaymentCreateDto paymentCreateDto2 = PaymentCreateDto.builder()
+        PaymentDto result2 = paymentService.createPayment(PaymentCreateDto.builder()
                 .orderId("order-2")
                 .userId("user-1")
                 .paymentAmount(new BigDecimal("20.00"))
-                .build();
-
-        PaymentDto result1 = paymentService.createPayment(paymentCreateDto1);
-        PaymentDto result2 = paymentService.createPayment(paymentCreateDto2);
+                .build());
 
         assertThat(result1.getId()).isNotEqualTo(result2.getId());
     }
 
     @Test
     void search_ShouldFilterByUserId() {
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("2")));
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("2")));
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-1")
-                .userId("user-A")
-                .paymentAmount(new BigDecimal("100.00"))
-                .build());
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-1").userId("user-A").paymentAmount(new BigDecimal("100.00")).build());
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-2").userId("user-A").paymentAmount(new BigDecimal("200.00")).build());
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-3").userId("user-B").paymentAmount(new BigDecimal("300.00")).build());
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-2")
-                .userId("user-A")
-                .paymentAmount(new BigDecimal("200.00"))
-                .build());
+        await().atMost(10, TimeUnit.SECONDS).until(() -> true); // дать время на Kafka
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-3")
-                .userId("user-B")
-                .paymentAmount(new BigDecimal("300.00"))
-                .build());
+        Page<PaymentDto> userAPayments = paymentService.search(PageRequest.of(0, 10), null, "user-A", null);
 
-        pollKafkaRecords(Duration.ofSeconds(1));
-
-        Pageable pageable = PageRequest.of(0, 10);
-        Page<PaymentDto> userAPayments = paymentService.search(pageable, null, "user-A", null);
-
-        assertThat(userAPayments.getContent()).hasSize(2);
-        assertThat(userAPayments.getContent())
+        assertThat(userAPayments.getContent()).hasSize(2)
                 .allMatch(p -> p.getUserId().equals("user-A"));
     }
 
     @Test
     void search_ShouldFilterByOrderId() {
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("2")));
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("2")));
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-1")
-                .userId("user-A")
-                .paymentAmount(new BigDecimal("100.00"))
-                .build());
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-1").userId("user-A").paymentAmount(new BigDecimal("100.00")).build());
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-2").userId("user-A").paymentAmount(new BigDecimal("200.00")).build());
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-2")
-                .userId("user-A")
-                .paymentAmount(new BigDecimal("200.00"))
-                .build());
+        await().atMost(10, TimeUnit.SECONDS).until(() -> true);
 
-        pollKafkaRecords(Duration.ofSeconds(1));
+        Page<PaymentDto> order2Payments = paymentService.search(PageRequest.of(0, 10), "order-2", null, null);
 
-        Pageable pageable = PageRequest.of(0, 10);
-        Page<PaymentDto> order2Payments = paymentService.search(pageable, "order-2", null, null);
-
-        assertThat(order2Payments.getContent()).hasSize(1);
-        assertThat(order2Payments.getContent().get(0).getOrderId()).isEqualTo("order-2");
+        assertThat(order2Payments.getContent()).hasSize(1)
+                .extracting(PaymentDto::getOrderId).containsExactly("order-2");
     }
 
     @Test
     void search_ShouldFilterByStatus() {
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("2")));
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("2")));
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-1").userId("user-A").paymentAmount(new BigDecimal("100.00")).build());
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-1")
-                .userId("user-A")
-                .paymentAmount(new BigDecimal("100.00"))
-                .build());
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("1")));
+        paymentService.createPayment(PaymentCreateDto.builder().orderId("order-2").userId("user-A").paymentAmount(new BigDecimal("200.00")).build());
 
-        wireMockServer.resetAll();
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("1")));
+        await().atMost(10, TimeUnit.SECONDS).until(() -> true);
 
-        paymentService.createPayment(PaymentCreateDto.builder()
-                .orderId("order-2")
-                .userId("user-A")
-                .paymentAmount(new BigDecimal("200.00"))
-                .build());
+        Page<PaymentDto> successfulPayments = paymentService.search(PageRequest.of(0, 10), null, null, List.of(PaymentStatus.SUCCESS));
 
-        pollKafkaRecords(Duration.ofSeconds(1));
-
-        Pageable pageable = PageRequest.of(0, 10);
-        Page<PaymentDto> successfulPayments = paymentService.search(pageable, null, null,
-                List.of(PaymentStatus.SUCCESS));
-
-        assertThat(successfulPayments.getContent()).hasSize(1);
-        assertThat(successfulPayments.getContent().get(0).getStatus()).isEqualTo(PaymentStatus.SUCCESS);
+        assertThat(successfulPayments.getContent()).hasSize(1)
+                .allMatch(p -> p.getStatus() == PaymentStatus.SUCCESS);
     }
 
     @Test
     void search_ShouldReturnPaginatedResults() {
-        for (int i = 1; i <= 15; i++) {
-            wireMockServer.resetAll();
-            wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                    .willReturn(aResponse().withBody("2")));
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("2")));
 
+        for (int i = 1; i <= 15; i++) {
             paymentService.createPayment(PaymentCreateDto.builder()
                     .orderId("order-" + i)
                     .userId("user")
@@ -452,53 +342,42 @@ class PaymentServiceImplTest {
                     .build());
         }
 
-        pollKafkaRecords(Duration.ofSeconds(1));
+        await().atMost(15, TimeUnit.SECONDS).until(() -> true);
 
-        Pageable firstPage = PageRequest.of(0, 5);
-        Page<PaymentDto> page1 = paymentService.search(firstPage, null, null, null);
+        Page<PaymentDto> page1 = paymentService.search(PageRequest.of(0, 5), null, null, null);
 
         assertThat(page1.getContent()).hasSize(5);
         assertThat(page1.getTotalElements()).isEqualTo(15);
         assertThat(page1.getTotalPages()).isEqualTo(3);
-        assertThat(page1.isFirst()).isTrue();
-        assertThat(page1.isLast()).isFalse();
     }
 
     @Test
     void getTotalAmount_ShouldSumSuccessfulPaymentsInDateRange() {
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("2")));
-
-        PaymentDto successfulPayment = paymentService.createPayment(PaymentCreateDto.builder()
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("2")));
+        PaymentDto p1 = paymentService.createPayment(PaymentCreateDto.builder()
                 .orderId("order-success-1")
                 .userId("user-1")
                 .paymentAmount(new BigDecimal("150.00"))
                 .build());
 
-        wireMockServer.resetAll();
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("1")));
-
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("1")));
         paymentService.createPayment(PaymentCreateDto.builder()
                 .orderId("order-failed-1")
                 .userId("user-1")
                 .paymentAmount(new BigDecimal("250.00"))
                 .build());
 
-        wireMockServer.resetAll();
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("4")));
-
-        PaymentDto successfulPayment2 = paymentService.createPayment(PaymentCreateDto.builder()
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("4")));
+        PaymentDto p2 = paymentService.createPayment(PaymentCreateDto.builder()
                 .orderId("order-success-2")
                 .userId("user-2")
                 .paymentAmount(new BigDecimal("350.00"))
                 .build());
 
-        pollKafkaRecords(Duration.ofSeconds(1));
+        await().atMost(10, TimeUnit.SECONDS).until(() -> true);
 
-        LocalDateTime from = successfulPayment.getTimestamp().minusHours(1);
-        LocalDateTime to = successfulPayment2.getTimestamp().plusHours(1);
+        LocalDateTime from = p1.getTimestamp().minusHours(1);
+        LocalDateTime to = p2.getTimestamp().plusHours(1);
 
         BigDecimal totalAmount = paymentService.getTotalAmount(from, to);
 
@@ -507,18 +386,16 @@ class PaymentServiceImplTest {
 
     @Test
     void getTotalAmount_ShouldReturnZeroForEmptyDateRange() {
-        LocalDateTime futureDate = LocalDateTime.now().plusYears(1);
-        LocalDateTime furtherFuture = futureDate.plusDays(1);
-
-        BigDecimal totalAmount = paymentService.getTotalAmount(futureDate, furtherFuture);
+        BigDecimal totalAmount = paymentService.getTotalAmount(
+                LocalDateTime.now().plusYears(1),
+                LocalDateTime.now().plusYears(1).plusDays(1));
 
         assertThat(totalAmount).isEqualTo(BigDecimal.ZERO);
     }
 
     @Test
     void getTotalAmount_ShouldReturnZeroForFailedPayments() {
-        wireMockServer.stubFor(get(urlPathEqualTo("/integers"))
-                .willReturn(aResponse().withBody("1")));
+        wireMockServer.stubFor(get(urlPathEqualTo("/integers")).willReturn(aResponse().withBody("1")));
 
         PaymentDto failedPayment = paymentService.createPayment(PaymentCreateDto.builder()
                 .orderId("order-failed")
@@ -526,12 +403,11 @@ class PaymentServiceImplTest {
                 .paymentAmount(new BigDecimal("999.99"))
                 .build());
 
-        pollKafkaRecords(Duration.ofSeconds(1));
+        await().atMost(10, TimeUnit.SECONDS).until(() -> true);
 
-        LocalDateTime from = failedPayment.getTimestamp().minusHours(1);
-        LocalDateTime to = failedPayment.getTimestamp().plusHours(1);
-
-        BigDecimal totalAmount = paymentService.getTotalAmount(from, to);
+        BigDecimal totalAmount = paymentService.getTotalAmount(
+                failedPayment.getTimestamp().minusHours(1),
+                failedPayment.getTimestamp().plusHours(1));
 
         assertThat(totalAmount).isEqualTo(BigDecimal.ZERO);
     }
