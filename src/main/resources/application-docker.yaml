@@ -1,10 +1,56 @@
 spring:
+  application:
+    name: PaymentService
+
   data:
     mongodb:
       uri: ${MONGODB_URI}
 
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    enabled: true
+
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    consumer:
+      group-id: payment-service-group
+      key-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+        spring.deserializer.key.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: org.oldvabik.paymentservice.event..CreateOrderEvent
 
-  liquibase:
-    enabled: false
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.springframework.kafka: WARN
+
+app:
+  kafka:
+    create-order-topic: order-created-topic
+    create-payment-topic: payment-created-topic
+    payment-group-id: payment-service-group
+
+random:
+  api:
+    url: ${RANDOM_API_URL}
+
+jwt:
+  secret: ${JWT_SECRET}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
+
+server:
+  port: 8083
